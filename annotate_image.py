@@ -5,9 +5,10 @@ import re
 import argparse
 
 class GenericTag(object):
-    def __init__(self, imgMeta, tag):
+    def __init__(self, imgMeta, tag, label=None):
         self.tag     = tag
         self.imgMeta = imgMeta
+        self.set_label(label)
 
 
     def get(self):
@@ -15,6 +16,13 @@ class GenericTag(object):
             return self.imgMeta[self.tag].value
         else:
             return None
+
+    def set_label(self, label):
+        if label:
+            self.label = label
+        else:
+            tag = re.split('\.', self.tag)[-1]
+            self.label = tag.lower()
 
     def set(self, value):
         self.imgMeta[self.tag] = value
@@ -35,7 +43,11 @@ class GenericTag(object):
 
 class ListTag(GenericTag):
     def set(self, value):
-        return GenericTag.set(self,  re.split(",\s*", value))
+        print value
+        if type(value) == str:
+            value = re.split(",\s*", value)
+        return GenericTag.set(self, self.get(False) + value)
+
 
     def get(self, encode=True):
         value = GenericTag.get(self)
@@ -66,25 +78,32 @@ class MetaDataCollection(object):
         self.imageData = imageData
         self.imageMeta = pyexiv2.ImageMetadata.from_buffer(imageData)
         self.imageMeta.read()
-        self.tagList = dict()
-
-    @staticmethod
-    def from_file(f):
-        data = f.read()
-        return MetaDataCollection(data)
-
-    def tag(self, tagName, tagKlass=GenericTag):
-        self.tagList[tagName] = tagKlass(self.imageMeta, tagName)
-        return self.tagList[tagName]
-
-    def list_tag(self, tagName):
-        return self.tag(tagName, ListTag)
-
-    def dict_tag(self, tagName):
-        return self.tag(tagName, DictTag)
+        self.tagList = list()
+        self.tags    = dict()
 
 
+    def addTag(self, tag):
+        self.tagList.append(tag.label)
+        self.tags[tag.label] = tag
+        return tag
 
+    def tag(self, tagName, label=None, tagKlass=GenericTag):
+        return self.addTag(tagKlass(self.imageMeta, tagName, label))
+
+    def list_tag(self, tagName, label=None):
+        return self.tag(tagName,label, ListTag)
+
+    def dict_tag(self, tagName, label=None):
+        return self.tag(tagName, label, DictTag)
+
+
+    def each_tag(self):
+        curr = 0
+        length = len(self.tagList)
+        while (curr < length):
+            tag = self.tagList[curr]
+            yield (tag, self.tags[tag])
+            curr += 1
 
 
 
@@ -92,7 +111,7 @@ class MetaDataCollection(object):
 
 
 class SetImageMeta(QtGui.QWidget):
-    def __init__(self, filename=None, parent=None, imgData=None):
+    def __init__(self, metadata, filename=None, parent=None, imgData=None, read_only=False):
         super(SetImageMeta, self).__init__(parent)
 
         self.setTags    = dict()
@@ -114,12 +133,19 @@ class SetImageMeta(QtGui.QWidget):
             self.mainLayout.addWidget(imgLabel, self.next_row(), 1)
 
 
-        # and a save button
-        self.btn = QtGui.QPushButton('Save', self)
-        self.mainLayout.addWidget(self.btn, self.next_row(), 1);
+        for label, tag in metadata.each_tag():
+            self.addItemRow(label.capitalize(), tag)
 
-        # when we save, save the image
-        self.btn.clicked.connect(self.save)
+
+        if not read_only:
+            # and a save button
+            self.btn = QtGui.QPushButton('Save', self)
+            # when we save, save the image
+            self.btn.clicked.connect(self.save)
+
+            # add to the layout
+            self.mainLayout.addWidget(self.btn, self.next_row(), 1);
+
 
         if filename:
             self.setWindowTitle(filename)
@@ -152,8 +178,8 @@ class SetImageMeta(QtGui.QWidget):
                 tag.remove()
             else:
                 tag.set(text)
-        self.imgMeta.write(True)
-        exit()
+        self.saved = True
+        self.close()
 
 
 def create_arg_parser():
@@ -164,7 +190,7 @@ def create_arg_parser():
     parser.add_argument('-s', '--source', type=str, help="Source of the image")
     parser.add_argument('-T', '--tags', type=str,action='append', help="Source of the image")
     parser.add_argument('-o', '--output', type=str, help='File to save the new image to')
-    parser.add_argument('-n', '--no-gui',  action='store_false',  help='No GUI')
+    parser.add_argument('-n', '--no-gui',  action='store_true',  help='No GUI')
     parser.add_argument('-r', '--read-only',  action='store_true',  help="Just read the data, don't display it")
     parser.add_argument('infile',  nargs='?', type=argparse.FileType('r'), default=sys.stdin)
     return parser
@@ -176,19 +202,34 @@ if __name__ == '__main__':
     parser = create_arg_parser()
     args,xtra = parser.parse_known_args()
     from pprint import pprint as pp
+    pp(args)
     meta = MetaDataCollection(args.infile.read())
+    meta.dict_tag('Xmp.dc.title')
+    meta.tag('Exif.Image.Artist')
+    meta.dict_tag('Xmp.dc.description')
+    meta.tag('Xmp.dc.source')
+    meta.list_tag('Xmp.dc.subject', label='tags')
 
 
-    app = QtGui.QApplication(sys.argv)
+    if not args.read_only:
+        argHash = vars(args)
+        for label, tag in meta.each_tag():
+            val = argHash[label]
+            if val:
+                tag.set(val)
 
 
-    widget = SetImageMeta(filename=args.infile.name, imgData=meta.imageData, read_only=args.read_only)
-    # add the various tag boxes
-    widget.addItemRow('Title'       , meta.dict_tag('Xmp.dc.title'))
-    widget.addItemRow('Artist'      , meta.tag('Exif.Image.Artist'))
-    widget.addItemRow('Description' , meta.dict_tag('Xmp.dc.description'))
-    widget.addItemRow('Source'      , meta.tag('Xmp.dc.source'))
-    widget.addItemRow('Tags'        , meta.list_tag('Xmp.dc.subject'))
-    widget.show()
 
-    sys.exit(app.exec_())
+    if args.no_gui and args.read_only:
+        for label, tag in meta.each_tag():
+            if args.read_only:
+                tval = tag.get()
+                if tval:
+                    print ("{0}: {1}".format(label.capitalize(), tval))
+    else:
+        app = QtGui.QApplication(sys.argv)
+        widget = SetImageMeta(filename=args.infile.name, metadata=meta, imgData=meta.imageData, read_only=args.read_only)
+        # add the various tag boxes
+        widget.show()
+
+        sys.exit(app.exec_())
