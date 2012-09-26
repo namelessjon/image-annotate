@@ -317,10 +317,9 @@ if __name__ == '__main__':
     if args.no_gui:
         if args.verbose:
             for label, tag in meta.each_tag():
-                if args.read_only:
-                    tval = tag.get()
-                    if tval:
-                        print ("{0}: {1}".format(label.capitalize(), tval))
+                tval = tag.get()
+                if tval:
+                    print ("{0}: {1}".format(label.capitalize(), tval))
         if not args.read_only and valueSet:
             meta.save()
     else:
