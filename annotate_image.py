@@ -3,6 +3,23 @@ from PyQt4 import QtGui
 import pyexiv2
 import re
 import argparse
+from tempfile import mkstemp
+import os.path
+import os
+import stat
+
+
+def get_umask():
+    current_umask = os.umask(0)
+    os.umask(current_umask)
+
+    return current_umask
+
+def set_perms(mask = (stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)):
+    umask = get_umask()
+    return ~umask & mask
+
+
 
 class GenericTag(object):
     def __init__(self, imgMeta, tag, label=None):
@@ -43,10 +60,9 @@ class GenericTag(object):
 
 class ListTag(GenericTag):
     def set(self, value):
-        print value
         if type(value) == str:
             value = re.split(",\s*", value)
-        return GenericTag.set(self, self.get(False) + value)
+        return GenericTag.set(self, ListTag.uniq(self.get(False) + value))
 
 
     def get(self, encode=True):
@@ -55,6 +71,23 @@ class ListTag(GenericTag):
             return ", ".join(value)
         else:
             return value
+
+    @staticmethod
+    def uniq(seq, idfun=None):
+        # order preserving
+        if idfun is None:
+            def idfun(x): return x
+        seen = {}
+        result = []
+        for item in seq:
+            marker = idfun(item)
+            # in old Python versions:
+            # if seen.has_key(marker)
+            # but in new ones:
+            if marker in seen: continue
+            seen[marker] = 1
+            result.append(item)
+        return result
 
 
 class DictTag(GenericTag):
@@ -74,12 +107,19 @@ class DictTag(GenericTag):
             return value
 
 class MetaDataCollection(object):
-    def __init__(self, imageData):
-        self.imageData = imageData
-        self.imageMeta = pyexiv2.ImageMetadata.from_buffer(imageData)
+    def __init__(self, imageData, outfile, read_only=False):
+        self.infile    = imageData
+        self.imageData = imageData.read()
+
+        self.imageMeta = pyexiv2.ImageMetadata.from_buffer(self.imageData)
+
         self.imageMeta.read()
+
         self.tagList = list()
         self.tags    = dict()
+
+        self.read_only = read_only
+        self.outfile   = outfile
 
 
     def addTag(self, tag):
@@ -105,7 +145,37 @@ class MetaDataCollection(object):
             yield (tag, self.tags[tag])
             curr += 1
 
+    @staticmethod
+    def absolute_path(path):
+        return os.path.abspath(os.path.expanduser(os.path.expandvars(path)))
 
+
+    def save(self):
+        if self.read_only:
+            raise StandardError("Tried to save read only file!")
+        else:
+            # write back to the buffer
+            self.imageMeta.write()
+            if type(self.outfile) == file:
+                self.outfile.write(self.imageMeta.buffer)
+            else:
+                path = MetaDataCollection.absolute_path(self.outfile)
+                dirname = os.path.dirname(path)
+                (outfd, tmpname) = mkstemp(dir=dirname, prefix='.tmp')
+                try:
+                    outfile = os.fdopen(outfd, "w")
+                    outfile.write(self.imageMeta.buffer)
+
+                    if self.infile != sys.stdin:
+                        os.fchmod(outfd, set_perms(os.stat(self.infile.name).st_mode))
+                    else:
+                        os.fchmod(outfs, set_perms())
+
+                    outfile.close()
+                    os.rename(tmpname, path)
+                except Exception, e:
+                    os.remove(tmpname)
+                    raise e
 
 
 
@@ -115,6 +185,7 @@ class SetImageMeta(QtGui.QWidget):
         super(SetImageMeta, self).__init__(parent)
 
         self.setTags    = dict()
+        self.metadata   = metadata
 
         # use a grid layout, for laziness
         self.mainLayout = QtGui.QGridLayout()
@@ -178,7 +249,7 @@ class SetImageMeta(QtGui.QWidget):
                 tag.remove()
             else:
                 tag.set(text)
-        self.saved = True
+        self.metadata.save()
         self.close()
 
 
@@ -191,8 +262,10 @@ def create_arg_parser():
     parser.add_argument('-T', '--tags', type=str,action='append', help="Source of the image")
     parser.add_argument('-o', '--output', type=str, help='File to save the new image to')
     parser.add_argument('-n', '--no-gui',  action='store_true',  help='No GUI')
-    parser.add_argument('-r', '--read-only',  action='store_true',  help="Just read the data, don't display it")
-    parser.add_argument('infile',  nargs='?', type=argparse.FileType('r'), default=sys.stdin)
+    parser.add_argument('-r', '--read-only',  action='store_true',  help="Don't edit the data in the file")
+    parser.add_argument('-v', '--verbose', action='store_true', help='Print stuff about what is being done')
+    parser.add_argument('infile',  nargs='?', default=sys.stdin)
+    parser.add_argument('outfile',  nargs='?', default=sys.stdout)
     return parser
 
 
@@ -202,8 +275,26 @@ if __name__ == '__main__':
     parser = create_arg_parser()
     args,xtra = parser.parse_known_args()
     from pprint import pprint as pp
-    pp(args)
-    meta = MetaDataCollection(args.infile.read())
+    # pp(args)
+
+    # set up files!
+    if args.infile != sys.stdin:
+        infile = open(args.infile, 'r')
+        if not os.access(args.infile, os.W_OK):
+            args.read_only = True
+        if args.outfile == sys.stdout: # if we have no outfile, we probably actually want to save back to the image
+            outfile = args.infile
+        else:
+            outfile = args.outfile
+    else:
+        infile = args.infile
+        outfile = args.outfile
+
+
+
+
+
+    meta = MetaDataCollection(infile, outfile, args.read_only)
     meta.dict_tag('Xmp.dc.title')
     meta.tag('Exif.Image.Artist')
     meta.dict_tag('Xmp.dc.description')
@@ -211,24 +302,34 @@ if __name__ == '__main__':
     meta.list_tag('Xmp.dc.subject', label='tags')
 
 
+    valueSet = False
     if not args.read_only:
         argHash = vars(args)
         for label, tag in meta.each_tag():
             val = argHash[label]
             if val:
+                if tag.get() != val:
+                    valueSet = True
                 tag.set(val)
 
 
 
-    if args.no_gui and args.read_only:
-        for label, tag in meta.each_tag():
-            if args.read_only:
-                tval = tag.get()
-                if tval:
-                    print ("{0}: {1}".format(label.capitalize(), tval))
+    if args.no_gui:
+        if args.verbose:
+            for label, tag in meta.each_tag():
+                if args.read_only:
+                    tval = tag.get()
+                    if tval:
+                        print ("{0}: {1}".format(label.capitalize(), tval))
+        if not args.read_only and valueSet:
+            meta.save()
     else:
+        if type(args.infile) == file:
+            filename = args.infile.name
+        else:
+            filename = args.infile
         app = QtGui.QApplication(sys.argv)
-        widget = SetImageMeta(filename=args.infile.name, metadata=meta, imgData=meta.imageData, read_only=args.read_only)
+        widget = SetImageMeta(filename=filename, metadata=meta, imgData=meta.imageData, read_only=args.read_only)
         # add the various tag boxes
         widget.show()
 
