@@ -62,7 +62,10 @@ class ListTag(GenericTag):
     def set(self, value):
         if type(value) == str:
             value = re.split(",\s*", value)
-        return GenericTag.set(self, ListTag.uniq(self.get(False) + value))
+        current = self.get(False)
+        if current == None:
+            current = []
+        return GenericTag.set(self, ListTag.uniq(current + value))
 
 
     def get(self, encode=True):
@@ -169,7 +172,7 @@ class MetaDataCollection(object):
                     if self.infile != sys.stdin:
                         os.fchmod(outfd, set_perms(os.stat(self.infile.name).st_mode))
                     else:
-                        os.fchmod(outfs, set_perms())
+                        os.fchmod(outfd, set_perms())
 
                     outfile.close()
                     os.rename(tmpname, path)
@@ -282,16 +285,19 @@ if __name__ == '__main__':
         infile = open(args.infile, 'r')
         if not os.access(args.infile, os.W_OK):
             args.read_only = True
-        if args.outfile == sys.stdout: # if we have no outfile, we probably actually want to save back to the image
+
+        if args.output: # we have it explicitly and indisputably
+            outfile = args.output
+        elif args.outfile == sys.stdout: # if we have no outfile, we probably actually want to save back to the image
             outfile = args.infile
         else:
             outfile = args.outfile
     else:
         infile = args.infile
-        outfile = args.outfile
-
-
-
+        if args.output:
+            outfile = args.output
+        else:
+            outfile = args.outfile
 
 
     meta = MetaDataCollection(infile, outfile, args.read_only)
