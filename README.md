@@ -17,7 +17,7 @@ It was written partly to learn about GUI, and partly to scratch an itch for anno
 
 
 ``` shell
-usage: annotate_image.py [-h] [-t TITLE] [-a ARTIST] [-d DESCRIPTION]
+usage: image_annotate.py [-h] [-t TITLE] [-a ARTIST] [-d DESCRIPTION]
                          [-s SOURCE] [-T TAGS] [-o OUTPUT] [-n] [-r] [-v]
                          [infile] [outfile]
 
